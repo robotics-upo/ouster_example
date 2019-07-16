@@ -10,7 +10,6 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <chrono>
-
 #include "ouster/os1_packet.h"
 #include "ouster/os1_util.h"
 #include "ouster_ros/OS1ConfigSrv.h"
@@ -77,6 +76,7 @@ int main(int argc, char** argv) {
 
     // publish transforms
     tf2_ros::StaticTransformBroadcaster tf_bcast{};
+
 
     tf_bcast.sendTransform(ouster_ros::OS1::transform_to_tf_msg(
         cfg.response.imu_to_sensor_transform, sensor_frame, imu_frame));
