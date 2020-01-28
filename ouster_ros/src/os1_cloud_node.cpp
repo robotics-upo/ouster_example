@@ -22,9 +22,12 @@ using PointOS1 = ouster_ros::OS1::PointOS1;
 
 namespace OS1 = ouster::OS1;
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv)
+{
     ros::init(argc, argv, "os1_cloud_node");
     ros::NodeHandle nh("~");
+    bool pub_tf = true;
+    nh.param("publish_tf", pub_tf, (bool)true);
 
     auto tf_prefix = nh.param("tf_prefix", std::string{});
     auto sensor_frame = tf_prefix + "/os1_sensor";
@@ -34,7 +37,8 @@ int main(int argc, char** argv) {
     ouster_ros::OS1ConfigSrv cfg{};
     auto client = nh.serviceClient<ouster_ros::OS1ConfigSrv>("os1_config");
     client.waitForExistence();
-    if (!client.call(cfg)) {
+    if (!client.call(cfg))
+    {
         ROS_ERROR("Calling os1 config service failed");
         return EXIT_FAILURE;
     }
@@ -61,28 +65,31 @@ int main(int argc, char** argv) {
             lidar_pub.publish(msg);
         });
 
-    auto lidar_handler = [&](const PacketMsg& pm) mutable {
+    auto lidar_handler = [&](const PacketMsg &pm) mutable {
         batch_and_publish(pm.buf.data(), it);
     };
 
-    auto imu_handler = [&](const PacketMsg& p) {
+    auto imu_handler = [&](const PacketMsg &p) {
         imu_pub.publish(ouster_ros::OS1::packet_to_imu_msg(p, imu_frame));
     };
 
-    auto lidar_packet_sub = nh.subscribe<PacketMsg, const PacketMsg&>(
+    auto lidar_packet_sub = nh.subscribe<PacketMsg, const PacketMsg &>(
         "lidar_packets", 2048, lidar_handler);
-    auto imu_packet_sub = nh.subscribe<PacketMsg, const PacketMsg&>(
+    auto imu_packet_sub = nh.subscribe<PacketMsg, const PacketMsg &>(
         "imu_packets", 100, imu_handler);
 
     // publish transforms
-    tf2_ros::StaticTransformBroadcaster tf_bcast{};
 
+    if (pub_tf)
+    {
+        tf2_ros::StaticTransformBroadcaster tf_bcast{};
 
-    tf_bcast.sendTransform(ouster_ros::OS1::transform_to_tf_msg(
-        cfg.response.imu_to_sensor_transform, sensor_frame, imu_frame));
+        tf_bcast.sendTransform(ouster_ros::OS1::transform_to_tf_msg(
+            cfg.response.imu_to_sensor_transform, sensor_frame, imu_frame));
 
-    tf_bcast.sendTransform(ouster_ros::OS1::transform_to_tf_msg(
-        cfg.response.lidar_to_sensor_transform, sensor_frame, lidar_frame));
+        tf_bcast.sendTransform(ouster_ros::OS1::transform_to_tf_msg(
+            cfg.response.lidar_to_sensor_transform, sensor_frame, lidar_frame));
+    }
 
     ros::spin();
 
