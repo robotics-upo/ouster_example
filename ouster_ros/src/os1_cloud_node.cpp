@@ -8,6 +8,9 @@
 #include <ros/service.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
+#include <pcl_ros/transforms.h>
+#include <pcl_ros/point_cloud.h>
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <chrono>
 #include "ouster/os1_packet.h"
@@ -22,12 +25,52 @@ using PointOS1 = ouster_ros::OS1::PointOS1;
 
 namespace OS1 = ouster::OS1;
 
+double range_min_sq;
+pcl::PointCloud<pcl::PointXYZ> pc_non_dense;
+
+sensor_msgs::PointCloud2::ConstPtr undensifyPointCloud(const sensor_msgs::PointCloud2 &msg){
+
+    size_t init = 0, increment = 1;
+
+    pc_non_dense.reserve(msg.height * msg.width);
+    pc_non_dense.height = 1;
+    pc_non_dense.resize(0);
+
+    sensor_msgs::PointCloud2ConstIterator<float> iterX(msg, "x");
+	sensor_msgs::PointCloud2ConstIterator<float> iterY(msg, "y");
+	sensor_msgs::PointCloud2ConstIterator<float> iterZ(msg, "z");
+
+    for (size_t i = 0; i < msg.height; i++) {
+        for (size_t j = init; j < msg.width; j+= increment, 
+            iterX+=increment, iterY+=increment, iterZ+=increment) {
+            double x = *iterX;
+            double y = *iterY;
+            double z = *iterZ;
+            pcl::PointXYZ p(x,y,z);
+            if (x*x + y*y > range_min_sq) {
+                pc_non_dense.push_back(p);                    
+            }
+        }
+    }
+    sensor_msgs::PointCloud2 out_msg;
+    pc_non_dense.width = pc_non_dense.size();
+    pcl::toROSMsg(pc_non_dense, out_msg);
+    out_msg.header = msg.header;
+    out_msg.is_dense = false;
+    return std::make_unique<sensor_msgs::PointCloud2>(out_msg);
+}
+
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "os1_cloud_node");
     ros::NodeHandle nh("~");
     bool pub_tf = true;
     nh.param("publish_tf", pub_tf, (bool)true);
+
+    bool pub_non_dense_cloud = true;
+    nh.param("publish_non_dense_cloud", pub_non_dense_cloud, (bool)true);
+    nh.param("range_min_sq", range_min_sq, 0.5);
+    range_min_sq *= range_min_sq;
 
     auto tf_prefix = nh.param("tf_prefix", std::string{});
     auto sensor_frame = tf_prefix + "/os1_sensor";
@@ -47,7 +90,10 @@ int main(int argc, char **argv)
     uint32_t W = OS1::n_cols_of_lidar_mode(
         OS1::lidar_mode_of_string(cfg.response.lidar_mode));
 
-    auto lidar_pub = nh.advertise<sensor_msgs::PointCloud2>("points", 10);
+    std::string points_topic{"points"};
+    if(pub_non_dense_cloud) points_topic = points_topic + "_non_dense";
+
+    auto lidar_pub = nh.advertise<sensor_msgs::PointCloud2>(points_topic, 10);
     auto imu_pub = nh.advertise<sensor_msgs::Imu>("imu", 100);
 
     auto xyz_lut = OS1::make_xyz_lut(W, H, cfg.response.beam_azimuth_angles,
@@ -56,13 +102,17 @@ int main(int argc, char **argv)
     CloudOS1 cloud{W, H};
     auto it = cloud.begin();
     sensor_msgs::PointCloud2 msg{};
+    sensor_msgs::PointCloud2::ConstPtr undensifyMsg;
 
     auto batch_and_publish = OS1::batch_to_iter<CloudOS1::iterator>(
         xyz_lut, W, H, {}, &PointOS1::make,
         [&](uint64_t scan_ts) mutable {
             msg = ouster_ros::OS1::cloud_to_cloud_msg(
                 cloud, std::chrono::nanoseconds{scan_ts}, lidar_frame);
-            lidar_pub.publish(msg);
+            if(pub_non_dense_cloud){
+                undensifyMsg = undensifyPointCloud(msg);        
+            }
+            lidar_pub.publish(pub_non_dense_cloud? *undensifyMsg : msg);
         });
 
     auto lidar_handler = [&](const PacketMsg &pm) mutable {
